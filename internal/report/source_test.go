@@ -20,14 +20,87 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/google/pprof/internal/binutils"
 	"github.com/google/pprof/profile"
 )
+
+type prettyCumSums []int64
+
+func (cumSums prettyCumSums) String() string {
+	strs := make([]string, len(cumSums)+2)
+	strs[0] = "["
+	for i, cumSum := range cumSums {
+		strs[i+1] = "Cum: " + strconv.FormatInt(cumSum, 10)
+	}
+	strs[len(cumSums)+1] = "]"
+	return strings.Join(strs, " ")
+}
+
+func TestCalculatePtiles(t *testing.T) {
+	for _, testCase := range []struct {
+		cumSums []int64
+		want    map[int64]int64
+	}{
+		{
+			cumSums: nil,
+			want:    nil,
+		},
+		{
+			cumSums: []int64{
+				0,
+				8,
+			},
+			want: map[int64]int64{80: 8, 95: 8},
+		},
+		{
+			cumSums: []int64{
+				10,
+				5,
+				8,
+			},
+			want: map[int64]int64{80: 10, 95: 10},
+		},
+		{
+			cumSums: []int64{
+				0,
+				0,
+				0,
+				0,
+				11,
+				2,
+				9,
+				4,
+				8,
+				2,
+				16,
+				22,
+				13,
+			},
+			want: map[int64]int64{80: 13, 95: 22},
+		},
+		{
+			cumSums: []int64{
+				10,
+				10,
+				10,
+				10,
+				10,
+			},
+			want: map[int64]int64{80: 10, 95: 10},
+		},
+	} {
+		if ptiles := calculatePtiles(testCase.cumSums); !reflect.DeepEqual(ptiles, testCase.want) {
+			t.Errorf("calculatePtiles(%v) = %v; want %v", prettyCumSums(testCase.cumSums), ptiles, testCase.want)
+		}
+	}
+}
 
 func TestWebList(t *testing.T) {
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {

@@ -598,13 +598,67 @@ func (sp *sourcePrinter) print(w io.Writer, maxFiles int, rpt *Report) {
 	}
 }
 
+func (sp *sourcePrinter) cumSums(f *sourceFile) []int64 {
+	funcs := sp.functions(f)
+	cumSums := make([]int64, len(funcs))
+	for i, fn := range funcs {
+		cumSums[i] = fn.cum
+	}
+	sort.Sort(int64Slice(cumSums))
+
+	return cumSums
+}
+
+func getPtileCSSClassName(cumSum int64, ptiles map[int64]int64) string {
+	if cumSum == 0 {
+		return ""
+	}
+	for key, value := range ptiles {
+		if cumSum > value {
+			return " ptile_" + strconv.FormatInt(key, 10)
+		}
+	}
+	return ""
+}
+
+type int64Slice []int64
+
+func (a int64Slice) Len() int           { return len(a) }
+func (a int64Slice) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a int64Slice) Less(i, j int) bool { return a[i] < a[j] }
+
+// calculatePtile expects cumSums to be sorted and
+// to contain unique elements. It also expects the ptile to be between 0 and 99.
+func calculatePtile(ptile int64, cumSums []int64) int64 {
+	rank := float64(ptile) / 100 * float64(len(cumSums))
+	return cumSums[int64(rank)]
+}
+
+// calculatePtiles returns nil when the fnodes length is 0
+// because its result will never be used in such a case.
+func calculatePtiles(cumSums []int64) map[int64]int64 {
+	if cumSums == nil {
+		return nil
+	}
+
+	sort.Sort(int64Slice(cumSums))
+	ptiles := map[int64]int64{95: 0, 80: 0}
+	for key := range ptiles {
+		ptiles[key] = calculatePtile(key, cumSums)
+	}
+
+	return ptiles
+}
+
 func (sp *sourcePrinter) printFile(w io.Writer, f *sourceFile, rpt *Report) {
+	// cumSums := sp.cumSums(f)
 	for _, fn := range sp.functions(f) {
 		if fn.cum == 0 {
 			continue
 		}
 		printFunctionHeader(w, fn.name, f.fname, fn.flat, fn.cum, rpt)
 		var asm []assemblyInstruction
+		cumSums := make([]int64, 0, fn.end-fn.begin)
 		for l := fn.begin; l < fn.end; l++ {
 			lineContents, ok := sp.reader.line(f.fname, l)
 			if !ok {
@@ -620,6 +674,7 @@ func (sp *sourcePrinter) printFile(w io.Writer, f *sourceFile, rpt *Report) {
 					lineContents = "???"
 				}
 			}
+			cumSums = append(cumSums, fn.cum)
 
 			// Make list of assembly instructions.
 			asm = asm[:0]
@@ -647,7 +702,8 @@ func (sp *sourcePrinter) printFile(w io.Writer, f *sourceFile, rpt *Report) {
 				})
 			}
 
-			printFunctionSourceLine(w, l, flatSum, cumSum, lineContents, asm, sp.reader, rpt)
+			sort.Sort(int64Slice(cumSums))
+			printFunctionSourceLine(w, l, flatSum, cumSum, lineContents, asm, sp.reader, getPtileCSSClassName(fn.cum, calculatePtiles(cumSums)), rpt)
 		}
 		printFunctionClosing(w)
 	}
@@ -781,27 +837,28 @@ func printFunctionHeader(w io.Writer, name, path string, flatSum, cumSum int64, 
 
 // printFunctionSourceLine prints a source line and the corresponding assembly.
 func printFunctionSourceLine(w io.Writer, lineNo int, flat, cum int64, lineContents string,
-	assembly []assemblyInstruction, reader *sourceReader, rpt *Report) {
+	assembly []assemblyInstruction, reader *sourceReader, ptileCSSClassName string, rpt *Report) {
 	if len(assembly) == 0 {
 		fmt.Fprintf(w,
-			"<span class=line> %6d</span> <span class=nop>  %10s %10s %8s  %s </span>\n",
+			"<span class=line> %6d</span> <span class=\"nop%s\">  %10s %10s %8s  %s </span>\n",
 			lineNo,
+			ptileCSSClassName,
 			valueOrDot(flat, rpt), valueOrDot(cum, rpt),
 			"", template.HTMLEscapeString(lineContents))
 		return
 	}
 
 	nestedInfo := false
-	cl := "deadsrc"
+	cl := fmt.Sprintf("deadsrc%s", ptileCSSClassName)
 	for _, an := range assembly {
 		if len(an.inlineCalls) > 0 || an.instruction != synthAsm {
 			nestedInfo = true
-			cl = "livesrc"
+			cl = fmt.Sprintf("livesrc%s", ptileCSSClassName)
 		}
 	}
 
 	fmt.Fprintf(w,
-		"<span class=line> %6d</span> <span class=%s>  %10s %10s %8s  %s </span>",
+		"<span class=line> %6d</span> <span class=\"%s\">  %10s %10s %8s  %s </span>",
 		lineNo, cl,
 		valueOrDot(flat, rpt), valueOrDot(cum, rpt),
 		"", template.HTMLEscapeString(lineContents))
